@@ -1,15 +1,9 @@
-from flask import (
-    Flask, request, redirect, url_for,
-    session, send_from_directory
-)
+from flask import Flask, request, redirect, url_for, session, send_from_directory
 import sqlite3
 from datetime import datetime
 import uuid
 import os
-from werkzeug.security import (
-    generate_password_hash,
-    check_password_hash
-)
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 
@@ -24,7 +18,7 @@ DATABASE = "inspection.db"
 UPLOAD_FOLDER = "uploads"
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 
@@ -41,10 +35,6 @@ def get_connection():
     return conn
 
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -52,10 +42,13 @@ def now():
 def allowed_file(filename):
     return (
         "." in filename
-        and filename.rsplit(".", 1)[1].lower()
-        in ALLOWED_EXTENSIONS
+        and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
     )
 
+
+# ============================================================
+# LOGIN / ROLE HELPERS
+# ============================================================
 
 def login_required():
     return "user_id" in session
@@ -68,38 +61,49 @@ def authority_required():
     )
 
 
+def worker_required():
+    return (
+        "user_id" in session
+        and session.get("role") == "Worker"
+    )
+
+
+# ============================================================
+# PRIORITY CALCULATION
+# ============================================================
+
 def calculate_priority(location):
     """
-    Priority Rule:
-    1 occurrence  = Low
-    2-3 occurrences = Medium
-    4+ occurrences = High
+    Priority based on how many reports have occurred
+    at the same location.
+
+    1st time  = Low
+    2nd-3rd   = Medium
+    4th+      = High
     """
 
     conn = get_connection()
 
     count = conn.execute("""
-        SELECT COUNT(*) AS count
+        SELECT COUNT(*) AS total
         FROM issues
-        WHERE LOWER(location) = LOWER(?)
-    """, (location,)).fetchone()["count"]
+        WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
+    """, (location,)).fetchone()["total"]
 
     conn.close()
 
-    # +1 because the new issue is not inserted yet
     occurrence = count + 1
 
     if occurrence >= 4:
         return "High"
-
     elif occurrence >= 2:
         return "Medium"
-
-    return "Low"
+    else:
+        return "Low"
 
 
 # ============================================================
-# CREATE DATABASE
+# CREATE DATABASE TABLES
 # ============================================================
 
 def create_database():
@@ -118,7 +122,7 @@ def create_database():
         )
     """)
 
-    # INSPECTION ASSIGNMENTS
+    # ASSIGNMENTS
     conn.execute("""
         CREATE TABLE IF NOT EXISTS assignments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,7 +141,7 @@ def create_database():
         CREATE TABLE IF NOT EXISTS issues (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             assignment_id INTEGER,
-            worker_id INTEGER,
+            worker_id INTEGER NOT NULL,
             location TEXT NOT NULL,
             issue_type TEXT NOT NULL,
             description TEXT,
@@ -152,7 +156,7 @@ def create_database():
         )
     """)
 
-    # CCTV CAMERAS
+    # CCTV
     conn.execute("""
         CREATE TABLE IF NOT EXISTS cameras (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,12 +169,10 @@ def create_database():
 
     # DEFAULT AUTHORITY
     authority = conn.execute("""
-        SELECT * FROM users
-        WHERE unique_id = ?
+        SELECT id FROM users WHERE unique_id = ?
     """, ("ADMIN001",)).fetchone()
 
     if authority is None:
-
         conn.execute("""
             INSERT INTO users
             (unique_id, name, password, role, created_at)
@@ -185,12 +187,10 @@ def create_database():
 
     # DEFAULT WORKER
     worker = conn.execute("""
-        SELECT * FROM users
-        WHERE unique_id = ?
+        SELECT id FROM users WHERE unique_id = ?
     """, ("WORK001",)).fetchone()
 
     if worker is None:
-
         conn.execute("""
             INSERT INTO users
             (unique_id, name, password, role, created_at)
@@ -216,10 +216,7 @@ create_database()
 
 STYLE = """
 <style>
-
-* {
-    box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
     margin: 0;
@@ -254,7 +251,7 @@ body {
 
 .card {
     background: white;
-    padding: 28px;
+    padding: 25px;
     border-radius: 16px;
     margin-bottom: 25px;
     box-shadow: 0 6px 22px rgba(0,0,0,0.08);
@@ -267,7 +264,7 @@ body {
 }
 
 .hero h1 {
-    font-size: 40px;
+    font-size: 38px;
     color: #1e3a8a;
 }
 
@@ -281,24 +278,12 @@ body {
     cursor: pointer;
     text-decoration: none;
     margin: 4px;
-    font-size: 14px;
 }
 
-.btn-green {
-    background: #059669;
-}
-
-.btn-purple {
-    background: #7c3aed;
-}
-
-.btn-orange {
-    background: #ea580c;
-}
-
-.btn-red {
-    background: #dc2626;
-}
+.btn-green { background: #059669; }
+.btn-purple { background: #7c3aed; }
+.btn-orange { background: #ea580c; }
+.btn-red { background: #dc2626; }
 
 input, select, textarea {
     width: 100%;
@@ -310,13 +295,9 @@ input, select, textarea {
     font-size: 15px;
 }
 
-textarea {
-    min-height: 100px;
-}
+textarea { min-height: 100px; }
 
-h1, h2, h3 {
-    color: #1e3a8a;
-}
+h1, h2, h3 { color: #1e3a8a; }
 
 .info {
     background: #eff6ff;
@@ -346,53 +327,26 @@ h1, h2, h3 {
     display: inline-block;
     padding: 6px 10px;
     border-radius: 20px;
-    background: #e0e7ff;
     font-size: 13px;
     font-weight: bold;
 }
 
-.priority-high {
-    background: #fee2e2;
-    color: #991b1b;
-}
+.priority-high { background: #fee2e2; color: #991b1b; }
+.priority-medium { background: #fef3c7; color: #92400e; }
+.priority-low { background: #dcfce7; color: #166534; }
 
-.priority-medium {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.priority-low {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.status-pending {
-    background: #ede9fe;
-    color: #6d28d9;
-}
-
-.status-reported {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-.status-progress {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.status-resolved {
-    background: #dcfce7;
-    color: #166534;
-}
+.status-pending { background: #ede9fe; color: #6d28d9; }
+.status-reported { background: #fee2e2; color: #991b1b; }
+.status-progress { background: #fef3c7; color: #92400e; }
+.status-resolved { background: #dcfce7; color: #166534; }
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 18px;
 }
 
-.feature {
+.feature, .stat-card {
     background: white;
     padding: 22px;
     border-radius: 14px;
@@ -401,18 +355,12 @@ h1, h2, h3 {
 
 .dashboard-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     gap: 18px;
     margin: 22px 0;
 }
 
-.stat-card {
-    background: white;
-    padding: 22px;
-    border-radius: 15px;
-    text-align: center;
-    box-shadow: 0 5px 18px rgba(0,0,0,0.08);
-}
+.stat-card { text-align: center; }
 
 .stat-number {
     font-size: 32px;
@@ -450,39 +398,22 @@ th, td {
 }
 
 @media(max-width: 700px) {
-
-    .navbar {
-        padding: 15px;
-    }
-
-    .navbar a {
-        margin-left: 6px;
-    }
-
-    .hero h1 {
-        font-size: 29px;
-    }
-
-    .container {
-        padding: 15px;
-    }
-
-    table {
-        font-size: 13px;
-    }
+    .navbar { padding: 15px; }
+    .navbar a { margin-left: 5px; }
+    .hero h1 { font-size: 28px; }
+    .container { padding: 15px; }
 }
-
 </style>
 """
 
 
 # ============================================================
-# NAVIGATION BAR
+# NAVIGATION
 # ============================================================
 
 def navbar():
 
-    if "user_id" not in session:
+    if not login_required():
         return ""
 
     role = session.get("role")
@@ -504,9 +435,7 @@ def navbar():
             <a href="/my-assignments">📋 My Tasks</a>
         """
 
-    links += """
-        <a href="/logout">🚪 Logout</a>
-    """
+    links += '<a href="/logout">🚪 Logout</a>'
 
     return f"""
     <div class="navbar">
@@ -532,67 +461,46 @@ def landing():
     </div>
 
     <div class="hero">
-
         <h1>🏛️ Smart Real-Time Monitoring & Inspection System</h1>
-
         <p>
-            A centralized digital platform for inspection assignment,
-            real-time monitoring, evidence-based reporting and
-            efficient issue resolution.
+            A digital platform for inspection assignments,
+            evidence-based reporting and issue resolution.
         </p>
-
-        <a class="btn" href="/login">
-            🔐 Login to System
-        </a>
-
+        <a class="btn" href="/login">🔐 Login to System</a>
     </div>
 
     <div class="container">
-
         <div class="grid">
-
             <div class="feature">
                 <h3>📋 Smart Assignment</h3>
                 Authority assigns inspections directly to workers.
             </div>
-
             <div class="feature">
-                <h3>📸 Live Evidence</h3>
-                Workers upload photographs as inspection proof.
+                <h3>📸 Evidence Proof</h3>
+                Workers upload photographs when issues are found.
             </div>
-
             <div class="feature">
-                <h3>📍 Geo Information</h3>
-                Inspection reports can include location coordinates.
+                <h3>🚨 Priority System</h3>
+                Repeated issues automatically receive higher priority.
             </div>
-
             <div class="feature">
-                <h3>📊 Real-Time Dashboard</h3>
-                Authorities monitor all inspection activities.
+                <h3>📊 Monitoring</h3>
+                Authority monitors reports and updates their status.
             </div>
-
         </div>
 
         <div class="card">
-
-            <h2>⚙️ Inspection Workflow</h2>
-
+            <h2>⚙️ Workflow</h2>
             <p style="font-size:17px; line-height:2;">
-                👨‍💼 Authority Assigns Inspection
-                → 👷 Worker Receives Assignment
-                → 🔍 Inspection Conducted
-                → 📸 Evidence Submitted
-                → 👨‍💼 Authority Verifies
-                → 🔧 Action Started
-                → ✅ Issue Resolved
+                👨‍💼 Authority Assigns →
+                👷 Worker Receives Task →
+                🔍 Inspection →
+                📸 Evidence →
+                👨‍💼 Verification →
+                🔧 Action →
+                ✅ Resolved
             </p>
-
         </div>
-
-    </div>
-
-    <div class="footer">
-        Smart Real-Time Monitoring & Inspection System | Project 2026
     </div>
     """
 
@@ -615,17 +523,12 @@ def login():
         password = request.form["password"]
 
         conn = get_connection()
-
         user = conn.execute("""
-            SELECT * FROM users
-            WHERE unique_id = ?
+            SELECT * FROM users WHERE unique_id = ?
         """, (unique_id,)).fetchone()
-
         conn.close()
 
-        if user and check_password_hash(
-            user["password"], password
-        ):
+        if user and check_password_hash(user["password"], password):
 
             session["user_id"] = user["id"]
             session["name"] = user["name"]
@@ -637,49 +540,33 @@ def login():
 
     return f"""
     {STYLE}
-
     <div class="navbar">
         <b>🏛️ Smart Inspection System</b>
         <a href="/">← Back</a>
     </div>
 
     <div class="container">
-
-        <div class="card"
-             style="max-width:500px; margin:50px auto;">
-
+        <div class="card" style="max-width:500px;margin:50px auto;">
             <h1 style="text-align:center;">🔐 Login</h1>
 
             <form method="POST">
-
                 <label>🆔 Unique ID</label>
-                <input type="text"
-                       name="unique_id"
-                       required>
+                <input name="unique_id" required>
 
                 <label>🔑 Password</label>
-                <input type="password"
-                       name="password"
-                       required>
+                <input type="password" name="password" required>
 
-                <button class="btn"
-                        style="width:100%;"
-                        type="submit">
+                <button class="btn" style="width:100%;" type="submit">
                     Login
                 </button>
-
             </form>
 
-            <p class="error">{error}</p>
+            {f'<div class="error">{error}</div>' if error else ''}
 
             <p style="text-align:center;">
-                <a href="/forgot-password">
-                    Forgot Password?
-                </a>
+                <a href="/forgot-password">Forgot Password?</a>
             </p>
-
         </div>
-
     </div>
     """
 
@@ -709,67 +596,51 @@ def forgot_password():
         """, (unique_id, name)).fetchone()
 
         if user:
-
             conn.execute("""
-                UPDATE users
-                SET password = ?
-                WHERE id = ?
+                UPDATE users SET password = ? WHERE id = ?
             """, (
                 generate_password_hash(new_password),
                 user["id"]
             ))
-
             conn.commit()
             message = "✅ Password changed successfully! Please login."
-
         else:
-            error = "❌ User details do not match."
+            error = "❌ Unique ID and Name do not match."
 
         conn.close()
 
     return f"""
     {STYLE}
-
     <div class="container">
-
-        <div class="card"
-             style="max-width:500px; margin:50px auto;">
-
+        <div class="card" style="max-width:500px;margin:50px auto;">
             <h1>🔑 Reset Password</h1>
 
-            <p class="info">
-                For this project demo, verify your Unique ID and Name
-                before changing your password.
-            </p>
+            <div class="info">
+                For this project demo, enter your Unique ID and registered
+                Name to reset your password.
+            </div>
 
             <form method="POST">
-
                 <label>🆔 Unique ID</label>
                 <input name="unique_id" required>
 
-                <label>👤 Full Name</label>
+                <label>👤 Registered Name</label>
                 <input name="name" required>
 
                 <label>🔑 New Password</label>
-                <input type="password"
-                       name="new_password"
-                       minlength="6"
-                       required>
+                <input type="password" name="new_password"
+                       minlength="6" required>
 
-                <button class="btn"
-                        type="submit">
+                <button class="btn" type="submit">
                     Change Password
                 </button>
-
             </form>
 
-            <p class="success">{message}</p>
-            <p class="error">{error}</p>
+            {f'<div class="success">{message}</div>' if message else ''}
+            {f'<div class="error">{error}</div>' if error else ''}
 
             <a href="/login">← Back to Login</a>
-
         </div>
-
     </div>
     """
 
@@ -780,9 +651,7 @@ def forgot_password():
 
 @app.route("/logout")
 def logout():
-
     session.clear()
-
     return redirect(url_for("landing"))
 
 
@@ -796,41 +665,16 @@ def home():
     if not login_required():
         return redirect(url_for("login"))
 
-    role = session["role"]
-
-    if role == "Authority":
-
+    if session["role"] == "Authority":
         buttons = """
-        <a class="btn btn-purple" href="/assignments">
-            📋 Assign Inspection
-        </a>
-
-        <a class="btn btn-green" href="/dashboard">
-            📊 Monitor Reports
-        </a>
-
-        <a class="btn" href="/users">
-            👥 Manage Users
-        </a>
+            <a class="btn btn-purple" href="/assignments">📋 Assign Inspection</a>
+            <a class="btn btn-green" href="/dashboard">📊 Monitor Reports</a>
+            <a class="btn" href="/users">👥 Manage Users</a>
         """
-
-    elif role == "Worker":
-
-        buttons = """
-        <a class="btn" href="/my-assignments">
-            📋 View My Assigned Inspections
-        </a>
-
-        <a class="btn btn-green" href="/dashboard">
-            📊 View My Reports
-        </a>
-        """
-
     else:
         buttons = """
-        <a class="btn" href="/dashboard">
-            📊 Dashboard
-        </a>
+            <a class="btn" href="/my-assignments">📋 My Assigned Tasks</a>
+            <a class="btn btn-green" href="/dashboard">📊 My Reports</a>
         """
 
     return f"""
@@ -838,53 +682,29 @@ def home():
     {navbar()}
 
     <div class="container">
-
         <div class="card" style="text-align:center;">
-
             <h1>Welcome, {session["name"]}! 👋</h1>
-
-            <p>
-                Role:
-                <span class="badge">{role}</span>
-            </p>
+            <p>Role: <span class="badge">{session["role"]}</span></p>
 
             <div class="info">
-                🔐 You can access features based on your assigned role.
+                🔐 Your account only shows features you are authorized to access.
             </div>
 
             {buttons}
-
         </div>
-
-        <div class="card">
-
-            <h2>🎯 How the System Works</h2>
-
-            <p style="font-size:17px; line-height:2;">
-                📋 Assignment →
-                👷 Worker Inspection →
-                📸 Evidence →
-                👨‍💼 Verification →
-                🚨 Priority →
-                🔧 Action →
-                ✅ Resolution
-            </p>
-
-        </div>
-
     </div>
     """
 
 
 # ============================================================
-# USER MANAGEMENT - AUTHORITY
+# USER MANAGEMENT
 # ============================================================
 
 @app.route("/users", methods=["GET", "POST"])
 def users():
 
     if not authority_required():
-        return "⛔ Access Denied."
+        return "⛔ Access Denied. Authority only."
 
     message = ""
 
@@ -894,15 +714,8 @@ def users():
         password = request.form["password"]
         role = request.form["role"]
 
-        prefixes = {
-            "Authority": "AUTH",
-            "Worker": "WORK"
-        }
-
-        unique_id = (
-            prefixes[role]
-            + uuid.uuid4().hex[:6].upper()
-        )
+        prefix = "WORK" if role == "Worker" else "AUTH"
+        unique_id = prefix + uuid.uuid4().hex[:6].upper()
 
         conn = get_connection()
 
@@ -926,19 +739,14 @@ def users():
             ✅ User Created Successfully!<br><br>
             🆔 Unique ID: <b>{unique_id}</b><br>
             👤 Name: <b>{name}</b><br>
-            🏷️ Role: <b>{role}</b><br>
-            ⚠️ Please give the ID and password securely to the user.
+            🏷️ Role: <b>{role}</b>
         </div>
         """
 
     conn = get_connection()
-
     all_users = conn.execute("""
-        SELECT unique_id, name, role
-        FROM users
-        ORDER BY id DESC
+        SELECT unique_id, name, role FROM users ORDER BY id DESC
     """).fetchall()
-
     conn.close()
 
     rows = ""
@@ -959,21 +767,16 @@ def users():
     <div class="container">
 
         <div class="card">
-
             <h1>👥 User Management</h1>
-
             {message}
 
             <form method="POST">
-
                 <label>👤 Full Name</label>
                 <input name="name" required>
 
                 <label>🔑 Password</label>
-                <input type="password"
-                       name="password"
-                       minlength="6"
-                       required>
+                <input type="password" name="password"
+                       minlength="6" required>
 
                 <label>🏷️ Role</label>
                 <select name="role">
@@ -981,44 +784,36 @@ def users():
                     <option value="Authority">Authority</option>
                 </select>
 
-                <button class="btn btn-purple"
-                        type="submit">
+                <button class="btn btn-purple" type="submit">
                     ➕ Create User
                 </button>
-
             </form>
-
         </div>
 
         <div class="card">
-
             <h2>Registered Users</h2>
-
             <table>
                 <tr>
                     <th>Unique ID</th>
                     <th>Name</th>
                     <th>Role</th>
                 </tr>
-
                 {rows}
             </table>
-
         </div>
-
     </div>
     """
 
 
 # ============================================================
-# ASSIGN INSPECTION - AUTHORITY
+# AUTHORITY ASSIGNS INSPECTION
 # ============================================================
 
 @app.route("/assignments", methods=["GET", "POST"])
 def assignments():
 
     if not authority_required():
-        return "⛔ Access Denied. Only Authority can assign inspections."
+        return "⛔ Access Denied. Authority only."
 
     conn = get_connection()
 
@@ -1037,40 +832,36 @@ def assignments():
         instructions = request.form["instructions"].strip()
         scheduled_date = request.form["scheduled_date"]
 
-        # RANDOM ASSIGNMENT
         if worker_choice == "RANDOM":
 
-            random_worker = conn.execute("""
+            selected_worker = conn.execute("""
                 SELECT * FROM users
                 WHERE role = 'Worker'
                 ORDER BY RANDOM()
                 LIMIT 1
             """).fetchone()
 
-            if random_worker is None:
+            if selected_worker is None:
                 conn.close()
-                return "❌ No workers available."
-
-            worker_id = random_worker["id"]
-            worker_name = random_worker["name"]
+                return "❌ No Workers available."
 
         else:
-
-            worker_id = int(worker_choice)
-
             selected_worker = conn.execute("""
-                SELECT * FROM users WHERE id = ?
-            """, (worker_id,)).fetchone()
+                SELECT * FROM users
+                WHERE id = ? AND role = 'Worker'
+            """, (int(worker_choice),)).fetchone()
 
-            worker_name = selected_worker["name"]
+        if selected_worker is None:
+            conn.close()
+            return "❌ Worker not found."
 
         conn.execute("""
             INSERT INTO assignments
-            (worker_id, location, instructions,
-             scheduled_date, status, created_at)
+            (worker_id, location, instructions, scheduled_date,
+             status, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
-            worker_id,
+            selected_worker["id"],
             location,
             instructions,
             scheduled_date,
@@ -1083,8 +874,10 @@ def assignments():
         message = f"""
         <div class="success">
             ✅ Inspection Assigned Successfully!<br><br>
-            👷 Assigned Worker: <b>{worker_name}</b><br>
-            📍 Location: <b>{location}</b>
+            👷 Worker: <b>{selected_worker["name"]}</b><br>
+            📍 Location: <b>{location}</b><br><br>
+            The Worker will see this assignment when they log in
+            and open <b>My Tasks</b>. 📋
         </div>
         """
 
@@ -1097,14 +890,10 @@ def assignments():
 
     conn.close()
 
-    worker_options = """
-        <option value="RANDOM">
-            🎲 Random Worker Assignment
-        </option>
-    """
+    options = '<option value="RANDOM">🎲 Random Worker Assignment</option>'
 
     for worker in workers:
-        worker_options += f"""
+        options += f"""
         <option value="{worker["id"]}">
             {worker["name"]} ({worker["unique_id"]})
         </option>
@@ -1129,44 +918,34 @@ def assignments():
     <div class="container">
 
         <div class="card">
-
             <h1>📋 Assign Inspection</h1>
-
             {message}
 
             <form method="POST">
 
                 <label>👷 Select Worker</label>
-
                 <select name="worker_id" required>
-                    {worker_options}
+                    {options}
                 </select>
 
                 <label>📍 Inspection Location</label>
-                <input name="location"
-                       placeholder="Example: Institute Block A"
-                       required>
+                <input name="location" required>
 
                 <label>📅 Scheduled Date</label>
-                <input type="date"
-                       name="scheduled_date">
+                <input type="date" name="scheduled_date">
 
                 <label>📝 Instructions</label>
                 <textarea name="instructions"
-                          placeholder="What should the worker inspect?"></textarea>
+                    placeholder="What should the Worker inspect?"></textarea>
 
-                <button class="btn btn-purple"
-                        type="submit">
+                <button class="btn btn-purple" type="submit">
                     📋 Assign Inspection
                 </button>
-
             </form>
-
         </div>
 
         <div class="card">
-
-            <h2>📋 All Inspection Assignments</h2>
+            <h2>📋 All Assignments</h2>
 
             <table>
                 <tr>
@@ -1175,31 +954,27 @@ def assignments():
                     <th>Date</th>
                     <th>Status</th>
                 </tr>
-
                 {rows}
             </table>
-
         </div>
-
     </div>
     """
 
 
 # ============================================================
-# WORKER - MY ASSIGNMENTS
+# WORKER - VIEW OWN ASSIGNMENTS
 # ============================================================
 
 @app.route("/my-assignments")
 def my_assignments():
 
-    if not login_required():
-        return redirect(url_for("login"))
-
-    if session["role"] != "Worker":
-        return "⛔ This page is for Workers only."
+    if not worker_required():
+        return "⛔ Access Denied. Worker only."
 
     conn = get_connection()
 
+    # IMPORTANT:
+    # Only assignments where worker_id matches the logged-in Worker
     assignments_list = conn.execute("""
         SELECT * FROM assignments
         WHERE worker_id = ?
@@ -1214,12 +989,10 @@ def my_assignments():
 
         if assignment["status"] == "Assigned":
             action = f"""
-            <a class="btn"
-               href="/inspection/{assignment["id"]}">
-                🔍 Start Inspection
-            </a>
+                <a class="btn" href="/inspection/{assignment["id"]}">
+                    🔍 Start Inspection
+                </a>
             """
-
         else:
             action = "✅ Submitted"
 
@@ -1228,11 +1001,7 @@ def my_assignments():
             <td>{assignment["location"]}</td>
             <td>{assignment["instructions"] or "-"}</td>
             <td>{assignment["scheduled_date"] or "-"}</td>
-            <td>
-                <span class="badge">
-                    {assignment["status"]}
-                </span>
-            </td>
+            <td>{assignment["status"]}</td>
             <td>{action}</td>
         </tr>
         """
@@ -1251,15 +1020,13 @@ def my_assignments():
     {navbar()}
 
     <div class="container">
-
         <h1>📋 My Assigned Inspections</h1>
 
         <div class="info">
-            👷 You can only view inspections assigned to your account.
+            👷 These are inspections assigned specifically to your account.
         </div>
 
         <div class="card">
-
             <table>
                 <tr>
                     <th>📍 Location</th>
@@ -1268,37 +1035,28 @@ def my_assignments():
                     <th>Status</th>
                     <th>Action</th>
                 </tr>
-
                 {rows}
-
             </table>
-
         </div>
-
     </div>
     """
 
 
 # ============================================================
-# CONDUCT INSPECTION - WORKER
+# WORKER CONDUCTS INSPECTION
 # ============================================================
 
-@app.route("/inspection/<int:assignment_id>",
-           methods=["GET", "POST"])
+@app.route("/inspection/<int:assignment_id>", methods=["GET", "POST"])
 def inspection(assignment_id):
 
-    if not login_required():
-        return redirect(url_for("login"))
-
-    if session["role"] != "Worker":
-        return "⛔ Only Workers can conduct inspections."
+    if not worker_required():
+        return "⛔ Access Denied. Worker only."
 
     conn = get_connection()
 
     assignment = conn.execute("""
         SELECT * FROM assignments
-        WHERE id = ?
-        AND worker_id = ?
+        WHERE id = ? AND worker_id = ?
     """, (
         assignment_id,
         session["user_id"]
@@ -1307,7 +1065,7 @@ def inspection(assignment_id):
     conn.close()
 
     if assignment is None:
-        return "⛔ This inspection is not assigned to you."
+        return "⛔ This inspection is not assigned to your account."
 
     if assignment["status"] != "Assigned":
         return "⚠️ This inspection has already been submitted."
@@ -1334,22 +1092,16 @@ def inspection(assignment_id):
             detected_issues.append("Facilities")
 
         photo_filename = ""
-
         photo = request.files.get("photo")
 
         if photo and photo.filename:
 
             if allowed_file(photo.filename):
 
-                extension = (
-                    photo.filename.rsplit(".", 1)[1].lower()
-                )
+                filename = secure_filename(photo.filename)
+                extension = filename.rsplit(".", 1)[1].lower()
 
-                photo_filename = (
-                    uuid.uuid4().hex
-                    + "."
-                    + extension
-                )
+                photo_filename = uuid.uuid4().hex + "." + extension
 
                 photo.save(os.path.join(
                     app.config["UPLOAD_FOLDER"],
@@ -1357,23 +1109,22 @@ def inspection(assignment_id):
                 ))
 
             else:
-                return "❌ Only PNG, JPG, JPEG or GIF images allowed."
+                return "❌ Only PNG, JPG, JPEG and GIF images are allowed."
 
-        # If issue exists, photo is strongly required
+        # Proof required if an issue is found
         if detected_issues and not photo_filename:
             return """
             <h2>⚠️ Evidence Photo Required</h2>
-            <p>Please upload a photograph as proof when an issue is found.</p>
+            <p>Please upload a photo as proof when an issue is found.</p>
             <a href="javascript:history.back()">← Go Back</a>
             """
 
         conn = get_connection()
+        priority = None
 
         if detected_issues:
 
-            priority = calculate_priority(
-                assignment["location"]
-            )
+            priority = calculate_priority(assignment["location"])
 
             for issue_type in detected_issues:
 
@@ -1407,28 +1158,22 @@ def inspection(assignment_id):
         conn.commit()
         conn.close()
 
-        if detected_issues:
-
-            result = f"""
-            ⚠️ Issues submitted for Authority Verification.<br><br>
-            Issue Types: <b>{", ".join(detected_issues)}</b><br>
-            Priority: <b>{priority}</b>
+        result = (
+            "✅ No issues were found. Inspection completed."
+            if not detected_issues
+            else f"""
+                ⚠️ Issues submitted for Authority verification.<br><br>
+                Issues: <b>{", ".join(detected_issues)}</b><br>
+                Priority: <b>{priority}</b>
             """
-
-        else:
-            result = """
-            ✅ Inspection completed successfully.
-            No issues were found.
-            """
+        )
 
         return f"""
         {STYLE}
         {navbar()}
 
         <div class="container">
-
             <div class="card" style="text-align:center;">
-
                 <h1>✅ Inspection Submitted!</h1>
 
                 <div class="info">
@@ -1437,13 +1182,10 @@ def inspection(assignment_id):
                     {result}
                 </div>
 
-                <a class="btn"
-                   href="/my-assignments">
-                    📋 My Assignments
+                <a class="btn" href="/my-assignments">
+                    📋 Back to My Tasks
                 </a>
-
             </div>
-
         </div>
         """
 
@@ -1452,71 +1194,53 @@ def inspection(assignment_id):
     {navbar()}
 
     <div class="container">
-
         <div class="card">
 
             <h1>🔍 Conduct Inspection</h1>
 
             <div class="info">
-                📍 Location:
-                <b>{assignment["location"]}</b><br><br>
-
-                📝 Instructions:
-                {assignment["instructions"] or "General inspection"}
+                📍 <b>{assignment["location"]}</b><br><br>
+                📝 {assignment["instructions"] or "General inspection"}
             </div>
 
-            <form method="POST"
-                  enctype="multipart/form-data">
+            <form method="POST" enctype="multipart/form-data">
 
                 <h3>🧹 Cleanliness</h3>
-
                 <select name="cleanliness">
                     <option value="Yes">Yes - Satisfactory ✅</option>
                     <option value="No">No - Issue Found ❌</option>
                 </select>
 
                 <h3>🛡️ Safety</h3>
-
                 <select name="safety">
                     <option value="Yes">Yes - Satisfactory ✅</option>
                     <option value="No">No - Issue Found ❌</option>
                 </select>
 
                 <h3>🏢 Facilities</h3>
-
                 <select name="facilities">
                     <option value="Yes">Yes - Satisfactory ✅</option>
                     <option value="No">No - Issue Found ❌</option>
                 </select>
 
-                <label>📸 Upload Evidence Photo</label>
-                <input type="file"
-                       name="photo"
-                       accept="image/*">
+                <label>📸 Evidence Photo (Required if issue found)</label>
+                <input type="file" name="photo" accept="image/*">
 
                 <label>📍 Latitude (Optional)</label>
-                <input name="latitude"
-                       placeholder="Example: 16.5062">
+                <input name="latitude">
 
                 <label>📍 Longitude (Optional)</label>
-                <input name="longitude"
-                       placeholder="Example: 80.6480">
+                <input name="longitude">
 
                 <label>📝 Description</label>
+                <textarea name="description"
+                    placeholder="Describe the problem if any..."></textarea>
 
-                <textarea
-                    name="description"
-                    placeholder="Describe any problem found..."></textarea>
-
-                <button class="btn"
-                        type="submit">
+                <button class="btn" type="submit">
                     📤 Submit Inspection
                 </button>
-
             </form>
-
         </div>
-
     </div>
     """
 
@@ -1535,18 +1259,18 @@ def dashboard():
 
     if session["role"] == "Worker":
 
+        # Worker can ONLY see their own reports
         issues = conn.execute("""
             SELECT issues.*, users.name AS worker_name
             FROM issues
             JOIN users ON issues.worker_id = users.id
             WHERE issues.worker_id = ?
             ORDER BY issues.id DESC
-        """, (
-            session["user_id"],
-        )).fetchall()
+        """, (session["user_id"],)).fetchall()
 
     else:
 
+        # Authority sees all reports, High priority first
         issues = conn.execute("""
             SELECT issues.*, users.name AS worker_name
             FROM issues
@@ -1560,21 +1284,12 @@ def dashboard():
                 issues.id DESC
         """).fetchall()
 
-    total = len(issues)
-    pending = sum(
-        1 for i in issues
-        if i["status"] == "Pending Verification"
-    )
-    progress = sum(
-        1 for i in issues
-        if i["status"] == "In Progress"
-    )
-    resolved = sum(
-        1 for i in issues
-        if i["status"] == "Resolved"
-    )
-
     conn.close()
+
+    total = len(issues)
+    pending = sum(1 for i in issues if i["status"] == "Pending Verification")
+    progress = sum(1 for i in issues if i["status"] == "In Progress")
+    resolved = sum(1 for i in issues if i["status"] == "Resolved")
 
     rows = ""
 
@@ -1582,23 +1297,22 @@ def dashboard():
 
         issue_id = issue["id"]
         status = issue["status"]
+        priority = issue["priority"]
 
-        priority_class = (
-            "priority-" + issue["priority"].lower()
-        )
+        priority_class = "priority-" + priority.lower()
 
         if status == "Pending Verification":
+
             status_class = "status-pending"
 
             if session["role"] == "Authority":
                 action = f"""
-                <a class="btn"
-                   href="/update/{issue_id}/Reported">
+                <a class="btn" href="/update/{issue_id}/Reported">
                     ✅ Verify
                 </a>
                 """
             else:
-                action = "⏳ Waiting for Verification"
+                action = "⏳ Waiting for Authority"
 
         elif status == "Reported":
 
@@ -1612,7 +1326,7 @@ def dashboard():
                 </a>
                 """
             else:
-                action = "👀 Authority Review"
+                action = "👀 Verified"
 
         elif status == "In Progress":
 
@@ -1622,14 +1336,13 @@ def dashboard():
                 action = f"""
                 <a class="btn btn-green"
                    href="/update/{issue_id}/Resolved">
-                    ✅ Resolve
+                    ✅ Mark Resolved
                 </a>
                 """
             else:
                 action = "🔄 Action in Progress"
 
         else:
-
             status_class = "status-resolved"
             action = "✅ Completed"
 
@@ -1637,10 +1350,8 @@ def dashboard():
 
         if issue["photo"]:
             photo_html = f"""
-            <a href="/uploads/{issue["photo"]}"
-               target="_blank">
-                <img class="photo"
-                     src="/uploads/{issue["photo"]}">
+            <a href="/uploads/{issue["photo"]}" target="_blank">
+                <img class="photo" src="/uploads/{issue["photo"]}">
             </a>
             """
 
@@ -1648,10 +1359,7 @@ def dashboard():
 
         if issue["latitude"] and issue["longitude"]:
             location_info += f"""
-            <br><small>
-            📍 {issue["latitude"]},
-            {issue["longitude"]}
-            </small>
+            <br><small>📍 {issue["latitude"]}, {issue["longitude"]}</small>
             """
 
         rows += f"""
@@ -1661,7 +1369,7 @@ def dashboard():
             <td>{issue["issue_type"]}</td>
             <td>
                 <span class="badge {priority_class}">
-                    {issue["priority"]}
+                    {priority}
                 </span>
             </td>
             <td>{issue["description"] or "-"}</td>
@@ -1693,8 +1401,7 @@ def dashboard():
         <h1>📊 Smart Monitoring Dashboard</h1>
 
         <p>
-            Welcome, <b>{session["name"]}</b>
-            |
+            Welcome, <b>{session["name"]}</b> |
             <span class="badge">{session["role"]}</span>
         </p>
 
@@ -1707,7 +1414,7 @@ def dashboard():
 
             <div class="stat-card">
                 <div class="stat-number">{pending}</div>
-                <p>🟣 Pending Verification</p>
+                <p>🟣 Pending</p>
             </div>
 
             <div class="stat-card">
@@ -1723,13 +1430,10 @@ def dashboard():
         </div>
 
         <div class="card">
-
             <h2>🚨 Inspection Reports</h2>
 
             <div style="overflow-x:auto;">
-
                 <table>
-
                     <tr>
                         <th>👷 Worker</th>
                         <th>📍 Location</th>
@@ -1740,21 +1444,16 @@ def dashboard():
                         <th>Status</th>
                         <th>Action</th>
                     </tr>
-
                     {rows}
-
                 </table>
-
             </div>
-
         </div>
-
     </div>
     """
 
 
 # ============================================================
-# UPDATE ISSUE STATUS - AUTHORITY ONLY
+# AUTHORITY UPDATE STATUS
 # ============================================================
 
 @app.route("/update/<int:issue_id>/<status>")
@@ -1787,18 +1486,17 @@ def update_status(issue_id, status):
 
 
 # ============================================================
-# CCTV MONITORING - AUTHORITY ONLY
+# CCTV MANAGEMENT
 # ============================================================
 
 @app.route("/cameras", methods=["GET", "POST"])
 def cameras():
 
     if not authority_required():
-        return "⛔ Access Denied."
-
-    conn = get_connection()
+        return "⛔ Access Denied. Authority only."
 
     message = ""
+    conn = get_connection()
 
     if request.method == "POST":
 
@@ -1821,8 +1519,7 @@ def cameras():
         message = "✅ CCTV connection added successfully."
 
     cameras_list = conn.execute("""
-        SELECT * FROM cameras
-        ORDER BY id DESC
+        SELECT * FROM cameras ORDER BY id DESC
     """).fetchall()
 
     conn.close()
@@ -1851,16 +1548,14 @@ def cameras():
     <div class="container">
 
         <div class="card">
-
             <h1>📹 CCTV Monitoring</h1>
 
             <div class="info">
-                Add only authorized CCTV dashboard or
-                browser-compatible stream URLs.
-                🔐 Do not expose private camera passwords.
+                Add only authorized CCTV or monitoring URLs.
+                Do not enter private camera passwords into this website.
             </div>
 
-            <p class="success">{message}</p>
+            {f'<div class="success">{message}</div>' if message else ''}
 
             <form method="POST">
 
@@ -1876,17 +1571,13 @@ def cameras():
                        placeholder="https://..."
                        required>
 
-                <button class="btn"
-                        type="submit">
+                <button class="btn" type="submit">
                     ➕ Add CCTV
                 </button>
-
             </form>
-
         </div>
 
         <div class="card">
-
             <h2>📹 Registered Cameras</h2>
 
             <table>
@@ -1895,12 +1586,9 @@ def cameras():
                     <th>Location</th>
                     <th>Monitoring</th>
                 </tr>
-
                 {rows}
             </table>
-
         </div>
-
     </div>
     """
 
@@ -1919,7 +1607,7 @@ def uploaded_file(filename):
 
 
 # ============================================================
-# ERROR - FILE TOO LARGE
+# FILE TOO LARGE ERROR
 # ============================================================
 
 @app.errorhandler(413)
